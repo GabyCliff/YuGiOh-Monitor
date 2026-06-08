@@ -11,7 +11,27 @@ export type CheckResult = {
 }
 
 function isInStock(html: string): boolean {
-  return html.includes('Agregar al carrito')
+  const normalized = html.toLowerCase()
+
+  // 1) OpenGraph product:availability meta tag (Tiendanube siempre lo emite).
+  //    Valores: "in stock", "instock", "available for order"  vs  "out of stock", "oos", "discontinued".
+  const ogMatch = normalized.match(
+    /<meta[^>]+property=["']product:availability["'][^>]+content=["']([^"']+)["']/i,
+  )
+  if (ogMatch) {
+    const value = ogMatch[1].trim()
+    return value === 'in stock' || value === 'instock' || value === 'available for order'
+  }
+
+  // 2) JSON-LD schema.org availability (fallback).
+  //    Ej: "availability":"https://schema.org/InStock"
+  const jsonLdMatch = normalized.match(/"availability"\s*:\s*"([^"]+)"/i)
+  if (jsonLdMatch) {
+    return jsonLdMatch[1].includes('instock')
+  }
+
+  // 3) Sin senales conocidas: tratar como sin stock para evitar falsos positivos.
+  return false
 }
 
 async function sendNotification(resend: Resend, card: Card) {
