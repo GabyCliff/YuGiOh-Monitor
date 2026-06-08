@@ -72,7 +72,7 @@ export default function Home() {
     setChecking(true)
     setError(null)
     try {
-      await fetch('/api/check-stock')
+      await fetch('/api/check-stock-manual')
       await fetchCards()
     } catch {
       setError('Error al chequear el stock')
