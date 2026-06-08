@@ -11,7 +11,7 @@ export type CheckResult = {
 }
 
 function isInStock(html: string): boolean {
-  return !html.includes('Sin stock')
+  return html.includes('Agregar al carrito')
 }
 
 async function sendNotification(resend: Resend, card: Card) {
