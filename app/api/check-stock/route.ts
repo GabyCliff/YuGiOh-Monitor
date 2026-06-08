@@ -1,24 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Redis } from '@upstash/redis'
 import { Resend } from 'resend'
-
-const CARD_URL = 'https://harucardshop.mitiendanube.com/productos/kewl-tune-rotary-blzd-ultra-rare/'
-const CARD_NAME = 'Kewl Tune Rotary BLZD Ultra Rare'
+import type { Card, CardStatus } from '../cards/route'
 
 function isInStock(html: string): boolean {
   return !html.includes('Sin stock')
 }
 
-async function sendNotification(resend: Resend) {
+async function sendNotification(resend: Resend, card: Card) {
   await resend.emails.send({
     from: process.env.EMAIL_FROM!,
     to: process.env.EMAIL_TO!,
-    subject: `[STOCK] ${CARD_NAME} ya esta disponible`,
+    subject: `[STOCK] ${card.name} ya esta disponible`,
     html: `
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #22c55e;">Carta disponible en stock</h2>
-        <p>La carta <strong>${CARD_NAME}</strong> ahora tiene stock disponible.</p>
-        <a href="${CARD_URL}" style="
+        <p>La carta <strong>${card.name}</strong> ahora tiene stock disponible.</p>
+        <a href="${card.url}" style="
           display: inline-block;
           background: #22c55e;
           color: white;
@@ -51,45 +49,55 @@ export async function GET(req: NextRequest) {
   })
 
   const resend = new Resend(process.env.RESEND_API_KEY!)
+  const cards = (await redis.get<Card[]>('cards')) ?? []
 
-  let html: string
-  try {
-    const res = await fetch(CARD_URL, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; StockBot/1.0)' },
-      next: { revalidate: 0 },
-    })
-    html = await res.text()
-  } catch (err) {
-    console.error('Error fetching page:', err)
-    return NextResponse.json({ error: 'Failed to fetch page' }, { status: 500 })
+  if (cards.length === 0) {
+    return NextResponse.json({ checked: 0, results: [] })
   }
 
-  const available = isInStock(html)
-  const now = new Date().toISOString()
+  const results = []
 
-  await redis.set('last_check', now)
-  await redis.set('in_stock', String(available))
+  for (const card of cards) {
+    try {
+      const res = await fetch(card.url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; StockBot/1.0)' },
+        next: { revalidate: 0 },
+      })
+      const html = await res.text()
+      const available = isInStock(html)
+      const now = new Date().toISOString()
 
-  if (available) {
-    const alreadyNotified = await redis.get<string>('last_notified')
-
-    if (!alreadyNotified) {
-      try {
-        await sendNotification(resend)
-        await redis.set('last_notified', now)
-        console.log('Notification sent at', now)
-      } catch (err) {
-        console.error('Error sending email:', err)
-        return NextResponse.json({ error: 'Failed to send email' }, { status: 500 })
+      const prevStatus = (await redis.get<CardStatus>(`status:${card.id}`)) ?? {
+        inStock: null,
+        lastCheck: null,
+        lastNotified: null,
       }
+
+      const newStatus: CardStatus = {
+        inStock: available,
+        lastCheck: now,
+        lastNotified: prevStatus.lastNotified,
+      }
+
+      if (available && !prevStatus.lastNotified) {
+        try {
+          await sendNotification(resend, card)
+          newStatus.lastNotified = now
+          console.log(`Notification sent for ${card.name} at ${now}`)
+        } catch (err) {
+          console.error(`Error sending notification for ${card.name}:`, err)
+        }
+      } else if (!available && prevStatus.lastNotified) {
+        newStatus.lastNotified = null
+      }
+
+      await redis.set(`status:${card.id}`, newStatus)
+      results.push({ id: card.id, name: card.name, available })
+    } catch (err) {
+      console.error(`Error checking ${card.name}:`, err)
+      results.push({ id: card.id, name: card.name, error: 'Failed to fetch' })
     }
-  } else {
-    await redis.del('last_notified')
   }
 
-  return NextResponse.json({
-    available,
-    lastCheck: now,
-    notified: available ? !!await redis.get('last_notified') : false,
-  })
+  return NextResponse.json({ checked: results.length, results })
 }
